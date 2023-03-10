@@ -1,0 +1,24 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+  Capa Data - APP CRUD DE NOTAS
+###############################################################################
+Parameters:
+###############################################################################
+  DynamoDBTableName:
+    Type: String
+    Default: tareas
+###############################################################################
+Resources:
+###############################################################################
+  DynamoDBTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: titulo
+          AttributeType: S
+      KeySchema:
+        - AttributeName: titulo
+          KeyType: HASH
+      TableName:
+        Ref: DynamoDBTableName
+      BillingMode: PAY_PER_REQUEST

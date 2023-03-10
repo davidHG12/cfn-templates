@@ -1,0 +1,421 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+  Capa App - APP CRUD DE NOTAS
+###############################################################################
+Parameters:
+###############################################################################
+  LambdaAllName:
+    Type: String
+    Default: all-tareas
+  #DynamoDBTableName:
+    #Type: String
+    #Default: tareas
+  APIName:
+    Type: String
+    Default: TareasAPI
+  EnvironmentName:
+    Type: String
+    Default: api
+
+###############################################################################
+Resources:
+###############################################################################
+  IAMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: Policy_api-lambda-db
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:BatchGetItem'
+                  - 'dynamodb:BatchWriteItem'
+                  - 'dynamodb:TagResource'
+                  - 'dynamodb:UntagResource'
+                  - 'dynamodb:PutItem'
+                  - 'dynamodb:DeleteItem'
+                  - 'dynamodb:GetItem'
+                  - 'dynamodb:Scan'
+                  - 'dynamodb:Query'
+                  - 'dynamodb:UpdateItem'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:CreateLogGroup'
+                  - 'logs:PutLogEvents'
+                Resource: '*'
+
+  LambdaAllFunction:
+      Type: 'AWS::Lambda::Function'
+      Properties:
+        Code:
+          ZipFile: |
+            const AWS = require('aws-sdk');
+            AWS.config.update( {
+              region: 'us-east-1'
+            });
+            const dynamodb = new AWS.DynamoDB.DocumentClient();
+            const dynamodbTableName = 'tareas';
+            const tareaPath = '/tarea';
+            const tareasPath = '/tareas';
+
+            exports.handler = async function(event) {
+              console.log('Request event: ', event);
+              let response;
+              switch(true) {
+                case event.httpMethod === 'GET' && event.path === tareaPath:
+                  response = await getTarea(event.queryStringParameters.titulo);
+                  break;
+                case event.httpMethod === 'GET' && event.path === tareasPath:
+                  response = await getTareas();
+                  break;
+                case event.httpMethod === 'POST' && event.path === tareaPath:
+                  response = await saveTarea(JSON.parse(event.body));
+                  break;
+                case event.httpMethod === 'PATCH' && event.path === tareaPath:
+                  const requestBody = JSON.parse(event.body);
+                  response = await modifyTarea(requestBody.titulo, requestBody.updateKey, requestBody.updateValue);
+                  break;
+                case event.httpMethod === 'DELETE' && event.path === tareaPath:
+                  response = await deleteTarea(JSON.parse(event.body).titulo);
+                  break;
+                default:
+                  response = buildResponse(404, '404 Not Found');
+              }
+              return response;
+            }
+
+            async function getTarea(titulo) {
+              const params = {
+                TableName: dynamodbTableName,
+                Key: {
+                  'titulo': titulo
+                }
+              }
+              return await dynamodb.get(params).promise().then((response) => {
+                return buildResponse(200, response.Item);
+              }, (error) => {
+                console.error('Do your custom error handling here. I am just gonna log it: ', error);
+              });
+            }
+
+            async function getTareas() {
+              const params = {
+                TableName: dynamodbTableName
+              }
+              const allTareas = await scanDynamoRecords(params, []);
+              const body = {
+                tareas: allTareas
+              }
+              return buildResponse(200, body);
+            }
+
+            async function scanDynamoRecords(scanParams, itemArray) {
+              try {
+                const dynamoData = await dynamodb.scan(scanParams).promise();
+                itemArray = itemArray.concat(dynamoData.Items);
+                if (dynamoData.LastEvaluatedKey) {
+                  scanParams.ExclusiveStartkey = dynamoData.LastEvaluatedKey;
+                  return await scanDynamoRecords(scanParams, itemArray);
+                }
+                return itemArray;
+              } catch(error) {
+                console.error('Do your custom error handling here. I am just gonna log it: ', error);
+              }
+            }
+
+            async function saveTarea(requestBody) {
+              const params = {
+                TableName: dynamodbTableName,
+                Item: requestBody
+              }
+              return await dynamodb.put(params).promise().then(() => {
+                const body = {
+                  Operation: 'SAVE',
+                  Message: 'SUCCESS',
+                  Item: requestBody
+                }
+                return buildResponse(200, body);
+              }, (error) => {
+                console.error('Do your custom error handling here. I am just gonna log it: ', error);
+              })
+            }
+
+            async function modifyTarea(titulo, updateKey, updateValue) {
+              const params = {
+                TableName: dynamodbTableName,
+                Key: {
+                  'titulo': titulo
+                },
+                UpdateExpression: `set ${updateKey} = :value`,
+                ExpressionAttributeValues: {
+                  ':value': updateValue
+                },
+                ReturnValues: 'UPDATED_NEW'
+              }
+              return await dynamodb.update(params).promise().then((response) => {
+                const body = {
+                  Operation: 'UPDATE',
+                  Message: 'SUCCESS',
+                  UpdatedAttributes: response
+                }
+                return buildResponse(200, body);
+              }, (error) => {
+                console.error('Do your custom error handling here. I am just gonna log it: ', error);
+              })
+            }
+
+            async function deleteTarea(titulo) {
+              const params = {
+                TableName: dynamodbTableName,
+                Key: {
+                  'titulo': titulo
+                },
+                ReturnValues: 'ALL_OLD'
+              }
+              return await dynamodb.delete(params).promise().then((response) => {
+                const body = {
+                  Operation: 'DELETE',
+                  Message: 'SUCCESS',
+                  Item: response
+                }
+                return buildResponse(200, body);
+              }, (error) => {
+                console.error('Do your custom error handling here. I am just gonna log it: ', error);
+              })
+            }
+
+            function buildResponse(statusCode, body) {
+              return {
+                statusCode: statusCode,
+                headers: {
+                  'Content-Type': 'application/json'
+                  'Access-Control-Allow-Headers' : 'Content-Type',
+                  'Access-Control-Allow-Origin': '*',
+                  'Access-Control-Allow-Methods': 'OPTIONS,POST,GET,PATCH,DELETE'
+                },
+                body: JSON.stringify(body)
+              }
+            }
+        FunctionName:
+          Ref: LambdaAllName
+        Handler: index.handler
+        #Environment:
+          #Variables:
+            #TABLE_NAME:
+              #Ref: DynamoDBTableName
+        Runtime: nodejs16.x
+        Role: !GetAtt IAMRole.Arn
+
+      
+  APIGatewayRestAPI:
+    Type: 'AWS::ApiGateway::RestApi'
+    Properties:
+      Name:
+        Ref: APIName
+
+  TareasResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ParentId: !GetAtt
+        - APIGatewayRestAPI
+        - RootResourceId
+      PathPart: tareas
+
+  TareasMethodGET:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ResourceId: !Ref TareasResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      MethodResponses:
+        - StatusCode: 200
+      Integration:
+        Type: AWS_PROXY
+        IntegrationResponses:
+          - StatusCode: 200
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - >-
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaGetNameArn}/invocations
+          - LambdaGetNameArn: !GetAtt LambdaAllFunction.Arn
+
+  TareasMethodCORS:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ResourceId: !Ref TareasResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        IntegrationResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+            method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+          ResponseTemplates:
+            application/json: ''
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+      - StatusCode: 200
+        ResponseModels:
+          application/json: 'Empty'
+        ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: false
+            method.response.header.Access-Control-Allow-Methods: false
+            method.response.header.Access-Control-Allow-Origin: false
+
+  TareaResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ParentId: !GetAtt
+        - APIGatewayRestAPI
+        - RootResourceId
+      PathPart: tarea
+
+  TareaMethodGET:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ResourceId: !Ref TareaResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      MethodResponses:
+        - StatusCode: 200
+      Integration:
+        Type: AWS_PROXY
+        IntegrationResponses:
+          - StatusCode: 200
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - >-
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaAllNameArn}/invocations
+          - LambdaAllNameArn: !GetAtt LambdaAllFunction.Arn
+      
+  TareaMethodPOST:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ResourceId: !Ref TareaResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      MethodResponses:
+        - StatusCode: 200
+      Integration:
+        Type: AWS_PROXY
+        IntegrationResponses:
+          - StatusCode: 200
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - >-
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaAllNameArn}/invocations
+          - LambdaAllNameArn: !GetAtt LambdaAllFunction.Arn
+
+  TareaMethodPATCH:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ResourceId: !Ref TareaResource
+      HttpMethod: PATCH
+      AuthorizationType: NONE
+      MethodResponses:
+        - StatusCode: 200
+      Integration:
+        Type: AWS_PROXY
+        IntegrationResponses:
+          - StatusCode: 200
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - >-
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaAllNameArn}/invocations
+          - LambdaAllNameArn: !GetAtt LambdaAllFunction.Arn
+
+  TareaMethodDELETE:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ResourceId: !Ref TareaResource
+      HttpMethod: DELETE
+      AuthorizationType: NONE
+      MethodResponses:
+        - StatusCode: 200
+      Integration:
+        Type: AWS_PROXY
+        IntegrationResponses:
+          - StatusCode: 200
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - >-
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaAllNameArn}/invocations
+          - LambdaAllNameArn: !GetAtt LambdaAllFunction.Arn
+
+  TareaMethodCORS:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ResourceId: !Ref TareaResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        IntegrationResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+            method.response.header.Access-Control-Allow-Methods: "'GET,POST,PATCH,DELETE,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+          ResponseTemplates:
+            application/json: ''
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+      - StatusCode: 200
+        ResponseModels:
+          application/json: 'Empty'
+        ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: false
+            method.response.header.Access-Control-Allow-Methods: false
+            method.response.header.Access-Control-Allow-Origin: false
+
+  APIGatewayDeployment:
+    Type: 'AWS::ApiGateway::Deployment'
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      StageName:
+        Ref: EnvironmentName
+    DependsOn:
+      - TareasMethodGET
+      - TareasMethodCORS
+      - TareaMethodGET
+      - TareaMethodPOST
+      - TareaMethodPATCH
+      - TareaMethodDELETE
+      - TareaMethodCORS
+
+  APIGatewayPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !GetAtt LambdaAllFunction.Arn
+      Principal: apigateway.amazonaws.com
